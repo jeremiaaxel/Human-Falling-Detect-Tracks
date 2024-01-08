@@ -1,24 +1,25 @@
-import os
-import cv2
-import time
-import torch
 import argparse
+import os
+import time
+
+import cv2
 import numpy as np
+import torch
 
-from Detection.Utils import ResizePadding
-from CameraLoader import CamLoader, CamLoader_Q
-from DetectorLoader import TinyYOLOv3_onecls
-
-from PoseEstimateLoader import SPPE_FastPose
-from fn import draw_single
-
-from Track.Tracker import Detection, Tracker
 from ActionsEstLoader import TSSTG
+from CameraLoader import CamLoader, CamLoader_Q
+from Detection.Utils import ResizePadding
+from DetectorLoader import TinyYOLOv3_onecls
+from fn import draw_single
+from PoseEstimateLoader import SPPE_FastPose
+from Track.Tracker import Detection, Tracker
 
-#source = '../Data/test_video/test7.mp4'
-#source = '../Data/falldata/Home/Videos/video (2).avi'  # hard detect
 source = '../Data/falldata/Home/Videos/video (1).avi'
-#source = 2
+
+THRESHOLDS = {
+    'Fall Down': 0.5,
+    'Lying Down': 3,
+}
 
 
 def preproc(image):
@@ -74,7 +75,7 @@ if __name__ == '__main__':
     tracker = Tracker(max_age=max_age, n_init=3)
 
     # Actions Estimate.
-    action_model = TSSTG()
+    action_model = TSSTG(device=device)
 
     resize_fn = ResizePadding(inp_dets, inp_dets)
 
@@ -95,6 +96,9 @@ if __name__ == '__main__':
         outvid = True
         codec = cv2.VideoWriter_fourcc(*'MJPG')
         writer = cv2.VideoWriter(args.save_out, codec, 30, (inp_dets * 2, inp_dets * 2))
+
+    # Dictionary to get label and the time start of action. Will be deleted if action is no more.
+    alerted_track_ids = {}
 
     fps_time = 0
     f = 0
@@ -134,6 +138,8 @@ if __name__ == '__main__':
         # create a new track if no matched.
         tracker.update(detections)
 
+        detected_ids = [track.track_id for track in tracker.tracks]
+
         # Predict Actions of each track.
         for i, track in enumerate(tracker.tracks):
             if not track.is_confirmed():
@@ -153,9 +159,25 @@ if __name__ == '__main__':
                 action = '{}: {:.2f}%'.format(action_name, out[0].max() * 100)
                 if action_name == 'Fall Down':
                     clr = (255, 0, 0)
+                    if track_id not in alerted_track_ids:
+                        alerted_track_ids[track_id] = {
+                            'label': action_name,
+                            'time_start': fps_time,
+                        }
+
                 elif action_name == 'Lying Down':
                     clr = (255, 200, 0)
+                    if track_id not in alerted_track_ids:
+                        alerted_track_ids[track_id] = {
+                            'label': action_name,
+                            'time_start': fps_time,
+                        }
 
+                else:
+                    # if action is no more, delete track_id from alerted_track_ids.
+                    if track_id in alerted_track_ids:
+                        del alerted_track_ids[track_id]
+                
             # VISUALIZE.
             if track.time_since_update == 0:
                 if args.show_skeleton:
@@ -170,8 +192,31 @@ if __name__ == '__main__':
         frame = cv2.resize(frame, (0, 0), fx=2., fy=2.)
         frame = cv2.putText(frame, '%d, FPS: %f' % (f, 1.0 / (time.time() - fps_time)),
                             (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-        frame = frame[:, :, ::-1]
+        
         fps_time = time.time()
+        # delete track_id from alerted_track_ids if it is not in detected_ids.
+        for track_id in list(alerted_track_ids.keys()):
+            if track_id not in detected_ids:
+                del alerted_track_ids[track_id]
+
+        alerts = []
+        if len(alerted_track_ids) > 0:
+            # check if time of fall or lying down is over 30 frames.
+            fall_or_lying_down_copy = alerted_track_ids.copy()
+            for track_id, data in sorted(fall_or_lying_down_copy.items(), key=lambda x: x[0]):
+                time_start = data.get('time_start')
+                label = data.get('label')
+                duration = fps_time - time_start
+                threshold = THRESHOLDS.get(label)
+                if duration > threshold:
+                    info = f'Track_id: {track_id} is {label} for {duration:.2f}!'
+                    alerts.append(info)
+        
+        for idx, alert in enumerate(alerts):
+            frame = cv2.putText(frame, alert,
+                                (10, 30 + (idx * 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+
+        frame = frame[:, :, ::-1]
 
         if outvid:
             writer.write(frame)
