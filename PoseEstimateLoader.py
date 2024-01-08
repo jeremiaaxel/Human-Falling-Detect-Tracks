@@ -21,14 +21,14 @@ class SPPE_FastPose(object):
         self.device = device
 
         if backbone == 'resnet101':
-            self.model = InferenNet_fast().to(device)
+            self.model = InferenNet_fast(device=device).to(device)
         else:
-            self.model = InferenNet_fastRes50().to(device)
+            self.model = InferenNet_fastRes50(device=device).to(device)
         self.model.eval()
 
     def predict(self, image, bboxs, bboxs_scores):
         inps, pt1, pt2 = crop_dets(image, bboxs, self.inp_h, self.inp_w)
-        pose_hm = self.model(inps.to(self.device)).cpu().data
+        pose_hm = self.model(inps.to(self.device)).to(self.device).data
 
         # Cut eyes and ears.
         pose_hm = torch.cat([pose_hm[:, :1, ...], pose_hm[:, 5:, ...]], dim=1)

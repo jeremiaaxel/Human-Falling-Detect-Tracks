@@ -28,8 +28,8 @@ class TinyYOLOv3_onecls(object):
                  conf_thres=0.45,
                  device='cuda'):
         self.input_size = input_size
-        self.model = Darknet(config_file).to(device)
-        self.model.load_state_dict(torch.load(weight_file))
+        self.model = Darknet(config_file, device=device).to(device)
+        self.model.load_state_dict(torch.load(weight_file, map_location=torch.device(device)))
         self.model.eval()
         self.device = device
 
@@ -57,7 +57,7 @@ class TinyYOLOv3_onecls(object):
             image = self.resize_fn(image)
 
         image = self.transf_fn(image)[None, ...]
-        scf = torch.min(self.input_size / torch.FloatTensor([image_size]), 1)[0]
+        scf = torch.min(self.input_size / torch.FloatTensor([image_size]), 1)[0].to(self.device)
 
         detected = self.model(image.to(self.device))
         detected = non_max_suppression(detected, self.conf_thres, self.nms)[0]

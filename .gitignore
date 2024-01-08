@@ -1,0 +1,7 @@
+__pycache__/
+TSSTG/
+yolo/
+
+Models/**
+
+.DS_Store

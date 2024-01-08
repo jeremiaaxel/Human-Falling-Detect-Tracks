@@ -6,7 +6,7 @@ import numpy as np
 from .Utils import build_targets, to_cpu, parse_model_config
 
 
-def create_modules(module_defs):
+def create_modules(module_defs, device='cuda'):
     """
     Constructs module list of layer blocks from module configuration in module_defs
     """
@@ -67,7 +67,7 @@ def create_modules(module_defs):
             num_classes = int(module_def["classes"])
             img_size = int(hyperparams["height"])
             # Define detection layer
-            yolo_layer = YOLOLayer(anchors, num_classes, img_size)
+            yolo_layer = YOLOLayer(anchors, num_classes, img_size, device=device)
             modules.add_module(f"yolo_{module_i}", yolo_layer)
         # Register module list and number of output filters
         module_list.append(modules)
@@ -96,8 +96,9 @@ class EmptyLayer(nn.Module):
 
 class YOLOLayer(nn.Module):
     """Detection layer"""
-    def __init__(self, anchors, num_classes, img_dim=416):
+    def __init__(self, anchors, num_classes, img_dim=416, device='cuda'):
         super(YOLOLayer, self).__init__()
+        self.device = device
         self.anchors = anchors
         self.num_anchors = len(anchors)
         self.num_classes = num_classes
@@ -116,9 +117,9 @@ class YOLOLayer(nn.Module):
         FloatTensor = torch.cuda.FloatTensor if cuda else torch.FloatTensor
         self.stride = self.img_dim / self.grid_size
         # Calculate offsets for each grid
-        self.grid_x = torch.arange(g).repeat(g, 1).view([1, 1, g, g]).type(FloatTensor)
-        self.grid_y = torch.arange(g).repeat(g, 1).t().view([1, 1, g, g]).type(FloatTensor)
-        self.scaled_anchors = FloatTensor([(a_w / self.stride, a_h / self.stride) for a_w, a_h in self.anchors])
+        self.grid_x = torch.arange(g).repeat(g, 1).view([1, 1, g, g]).type(FloatTensor).to(self.device)
+        self.grid_y = torch.arange(g).repeat(g, 1).t().view([1, 1, g, g]).type(FloatTensor).to(self.device)
+        self.scaled_anchors = FloatTensor([(a_w / self.stride, a_h / self.stride) for a_w, a_h in self.anchors]).to(self.device)
         self.anchor_w = self.scaled_anchors[:, 0:1].view((1, self.num_anchors, 1, 1))
         self.anchor_h = self.scaled_anchors[:, 1:2].view((1, self.num_anchors, 1, 1))
 
@@ -151,7 +152,7 @@ class YOLOLayer(nn.Module):
             self.compute_grid_offsets(grid_size, cuda=x.is_cuda)
 
         # Add offset and scale with anchors
-        pred_boxes = FloatTensor(prediction[..., :4].shape)
+        pred_boxes = FloatTensor(prediction[..., :4].shape).to(x.device)
         pred_boxes[..., 0] = x.data + self.grid_x
         pred_boxes[..., 1] = y.data + self.grid_y
         pred_boxes[..., 2] = torch.exp(w.data) * self.anchor_w
@@ -222,10 +223,11 @@ class YOLOLayer(nn.Module):
 
 class Darknet(nn.Module):
     """YOLOv3 object detection model"""
-    def __init__(self, config_path, img_size=416):
+    def __init__(self, config_path, img_size=416, device='cuda'):
         super(Darknet, self).__init__()
+        self.device = device
         self.module_defs = parse_model_config(config_path)
-        self.hyperparams, self.module_list = create_modules(self.module_defs)
+        self.hyperparams, self.module_list = create_modules(self.module_defs, device=device)
         self.yolo_layers = [layer[0] for layer in self.module_list if hasattr(layer[0], "metrics")]
         self.img_size = img_size
         self.seen = 0
@@ -248,7 +250,7 @@ class Darknet(nn.Module):
                 loss += layer_loss
                 yolo_outputs.append(x)
             layer_outputs.append(x)
-        yolo_outputs = to_cpu(torch.cat(yolo_outputs, 1))
+        yolo_outputs = torch.cat(yolo_outputs, 1).detach().to(self.device)
         return yolo_outputs if targets is None else (loss, yolo_outputs)
 
     def load_darknet_weights(self, weights_path):
